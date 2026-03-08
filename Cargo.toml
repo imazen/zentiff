@@ -1,0 +1,38 @@
+[package]
+name = "zentiff"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "Apache-2.0 OR MIT"
+description = "TIFF decoding and encoding wrapper with zenpixels integration"
+categories = ["multimedia::images", "multimedia::encoding"]
+keywords = ["tiff", "image", "decoder", "encoder", "codec"]
+repository = "https://github.com/imazen/zentiff"
+
+[dependencies]
+tiff = { version = "0.11", default-features = false }
+thiserror = { version = "2.0", default-features = false }
+whereat = { version = "0.1", default-features = false }
+enough = { version = "0.4", default-features = false }
+zenpixels = { version = "0.1", path = "../zenpixels/zenpixels", default-features = false, features = ["buffer"] }
+zencodec-types = { version = "0.1", path = "../zencodec-types", optional = true }
+bytemuck = { version = "1.25", default-features = false, features = ["extern_crate_alloc"] }
+
+[dev-dependencies]
+codec-corpus = "1"
+
+[features]
+default = ["std", "deflate", "lzw"]
+std = ["tiff/default", "enough/std", "whereat/std"]
+deflate = ["tiff/deflate"]
+fax = ["tiff/fax"]
+jpeg = ["tiff/jpeg"]
+lzw = ["tiff/lzw"]
+zstd = ["tiff/zstd"]
+zencodec = ["dep:zencodec-types"]
+
+[profile.test]
+opt-level = 2
+
+[patch.crates-io]
+zenpixels = { path = "../zenpixels/zenpixels" }
