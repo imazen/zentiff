@@ -169,11 +169,27 @@ pub fn decode(
 
     cancel.check().map_err(|e| at!(TiffError::from(e)))?;
 
-    let result = decoder.read_image().map_err(|e| at!(TiffError::from(e)))?;
+    // Use read_image_to_buffer instead of read_image to support planar images.
+    // read_image() only reads the first plane for planar TIFFs (known bug).
+    let layout = decoder
+        .image_buffer_layout()
+        .map_err(|e| at!(TiffError::from(e)))?;
+    let num_planes = layout.planes;
+
+    let mut result = tiff::decoder::DecodingResult::U8(Vec::new());
+    decoder
+        .read_image_to_buffer(&mut result)
+        .map_err(|e| at!(TiffError::from(e)))?;
 
     cancel.check().map_err(|e| at!(TiffError::from(e)))?;
 
     let (is_float, is_signed) = result_format_flags(&result);
+
+    // For planar images, interleave planes into contiguous pixel data.
+    if num_planes > 1 {
+        result = interleave_planes(result, width, height, num_planes, color_type).at()?;
+    }
+
     let (pixels, _descriptor) = convert_to_pixel_buffer(width, height, color_type, result).at()?;
 
     let info = TiffInfo {
@@ -203,6 +219,7 @@ fn result_format_flags(result: &tiff::decoder::DecodingResult) -> (bool, bool) {
 fn output_bytes_per_pixel(ct: tiff::ColorType) -> usize {
     let channels = match ct {
         tiff::ColorType::CMYK(_) | tiff::ColorType::CMYKA(_) => 4, // converted to RGBA
+        tiff::ColorType::Multiband { num_samples: 2, .. } => 2,    // GrayAlpha
         _ => ct.num_samples() as usize,
     };
     let bytes_per_channel = match ct.bit_depth() {
@@ -258,15 +275,18 @@ fn descriptor_for(ct: tiff::ColorType, is_float: bool) -> PixelDescriptor {
             bit_depth,
             num_samples,
         } => {
-            // Best-effort: treat as gray if 1 channel, RGB if 3, RGBA if 4
             match (num_samples, bit_depth) {
                 (1, 1..=8) => PixelDescriptor::GRAY8,
                 (1, _) => PixelDescriptor::GRAY16,
+                // 2 channels → GrayAlpha
+                (2, 1..=8) => PixelDescriptor::GRAYA8,
+                (2, 9..=16) => PixelDescriptor::GRAYA16,
+                (2, _) => PixelDescriptor::GRAYA16,
                 (3, 1..=8) => PixelDescriptor::RGB8,
                 (3, _) => PixelDescriptor::RGB16,
                 (4, 1..=8) => PixelDescriptor::RGBA8,
                 (4, _) => PixelDescriptor::RGBA16,
-                // Fall back to RGBA for unknown channel counts
+                // 5+ channels: drop extras, treat as RGBA
                 (_, 1..=8) => PixelDescriptor::RGBA8,
                 _ => PixelDescriptor::RGBA16,
             }
@@ -297,7 +317,7 @@ fn convert_to_pixel_buffer(
         tiff::ColorType::CMYKA(_) => {
             return convert_cmyk(width, height, color_type, result, true);
         }
-        _ => result_to_bytes(result, descriptor).at()?,
+        _ => result_to_bytes(width, height, color_type, result, descriptor).at()?,
     };
 
     let buf = PixelBuffer::from_vec(raw_bytes, width, height, descriptor)
@@ -314,24 +334,207 @@ fn vec_to_bytes<T: bytemuck::Pod>(v: Vec<T>) -> Vec<u8> {
     }
 }
 
+/// Unpack sub-byte samples (1, 2, 4, 6-bit) packed into bytes to one byte per sample.
+///
+/// The tiff crate returns packed data for sub-8-bit depths: e.g., 8 pixels per byte
+/// for 1-bit, 4 pixels per byte for 2-bit, etc. Each row is padded to byte boundary.
+/// This function expands to one sample per byte, scaled to full 0-255 range.
+fn unpack_subbyte(packed: &[u8], width: u32, height: u32, bits: u8, num_channels: u16) -> Vec<u8> {
+    let samples_per_row = width as usize * num_channels as usize;
+    let pixel_count = samples_per_row * height as usize;
+    let mut out = Vec::with_capacity(pixel_count);
+
+    // Scale factor: map max value for this bit depth to 255
+    let max_val = (1u16 << bits) - 1;
+
+    let bits_per_row = samples_per_row * bits as usize;
+    let packed_row_bytes = bits_per_row.div_ceil(8);
+
+    for row in 0..height as usize {
+        let row_start = row * packed_row_bytes;
+        let row_data = &packed[row_start..row_start + packed_row_bytes];
+
+        let mut bit_offset = 0usize;
+        for _ in 0..samples_per_row {
+            let byte_idx = bit_offset / 8;
+            let bit_in_byte = bit_offset % 8;
+
+            // Extract the sample value from the packed bytes (MSB first)
+            let raw = if bit_in_byte + bits as usize <= 8 {
+                // Fits within a single byte
+                let shift = 8 - bit_in_byte - bits as usize;
+                (row_data[byte_idx] >> shift) & ((1u8 << bits) - 1)
+            } else {
+                // Spans two bytes
+                let combined = ((row_data[byte_idx] as u16) << 8)
+                    | row_data.get(byte_idx + 1).copied().unwrap_or(0) as u16;
+                let shift = 16 - bit_in_byte - bits as usize;
+                ((combined >> shift) & ((1u16 << bits) - 1)) as u8
+            };
+
+            // Scale to 0-255
+            let scaled = if max_val == 0 {
+                0
+            } else {
+                (raw as u16 * 255 / max_val) as u8
+            };
+            out.push(scaled);
+
+            bit_offset += bits as usize;
+        }
+    }
+
+    out
+}
+
+/// Interleave planar image data (RRRGGGBBB → RGBRGBRGB).
+///
+/// The tiff crate's `read_image_to_buffer` stores planes consecutively in memory.
+/// This function interleaves them into standard pixel-interleaved layout.
+#[track_caller]
+fn interleave_planes(
+    result: tiff::decoder::DecodingResult,
+    width: u32,
+    height: u32,
+    num_planes: usize,
+    _color_type: tiff::ColorType,
+) -> Result<tiff::decoder::DecodingResult> {
+    use tiff::decoder::DecodingResult as DR;
+
+    match result {
+        DR::U8(data) => {
+            let plane_size = width as usize * height as usize;
+            if data.len() < plane_size * num_planes {
+                // Only got partial planes — return what we have (single-plane fallback)
+                return Ok(DR::U8(data));
+            }
+            let mut interleaved = Vec::with_capacity(plane_size * num_planes);
+            for pixel in 0..plane_size {
+                for plane in 0..num_planes {
+                    interleaved.push(data[plane * plane_size + pixel]);
+                }
+            }
+            Ok(DR::U8(interleaved))
+        }
+        DR::U16(data) => {
+            let plane_size = width as usize * height as usize;
+            if data.len() < plane_size * num_planes {
+                return Ok(DR::U16(data));
+            }
+            let mut interleaved = Vec::with_capacity(plane_size * num_planes);
+            for pixel in 0..plane_size {
+                for plane in 0..num_planes {
+                    interleaved.push(data[plane * plane_size + pixel]);
+                }
+            }
+            Ok(DR::U16(interleaved))
+        }
+        DR::U32(data) => {
+            let plane_size = width as usize * height as usize;
+            if data.len() < plane_size * num_planes {
+                return Ok(DR::U32(data));
+            }
+            let mut interleaved = Vec::with_capacity(plane_size * num_planes);
+            for pixel in 0..plane_size {
+                for plane in 0..num_planes {
+                    interleaved.push(data[plane * plane_size + pixel]);
+                }
+            }
+            Ok(DR::U32(interleaved))
+        }
+        DR::I8(data) => {
+            let plane_size = width as usize * height as usize;
+            if data.len() < plane_size * num_planes {
+                return Ok(DR::I8(data));
+            }
+            let mut interleaved = Vec::with_capacity(plane_size * num_planes);
+            for pixel in 0..plane_size {
+                for plane in 0..num_planes {
+                    interleaved.push(data[plane * plane_size + pixel]);
+                }
+            }
+            Ok(DR::I8(interleaved))
+        }
+        // Other types are uncommon in planar configs; pass through
+        other => Ok(other),
+    }
+}
+
 /// Convert a DecodingResult to raw bytes matching the target descriptor.
 ///
-/// For integer types wider than the target, values are truncated/scaled down.
-/// For float types, values are converted to the target type.
+/// Handles sub-byte unpacking, type conversion, and channel count adjustment.
 #[track_caller]
 fn result_to_bytes(
+    width: u32,
+    height: u32,
+    color_type: tiff::ColorType,
     result: tiff::decoder::DecodingResult,
     descriptor: PixelDescriptor,
 ) -> Result<Vec<u8>> {
     use tiff::decoder::DecodingResult as DR;
 
     let target_ct = descriptor.channel_type();
+    let target_channels = descriptor.channels();
+    let bit_depth = color_type.bit_depth();
+    let src_channels = color_type.num_samples();
+
+    // Handle sub-byte packed data (1, 2, 4, 6-bit depths)
+    if bit_depth < 8
+        && target_ct == ChannelType::U8
+        && let DR::U8(packed) = result
+    {
+        let mut expanded = unpack_subbyte(&packed, width, height, bit_depth, src_channels);
+
+        // If source has fewer channels than target, adjust
+        if (src_channels as usize) < target_channels {
+            expanded = expand_channels(
+                &expanded,
+                src_channels as usize,
+                target_channels,
+                width,
+                height,
+            );
+        } else if (src_channels as usize) > target_channels {
+            expanded = truncate_channels(
+                &expanded,
+                src_channels as usize,
+                target_channels,
+                width,
+                height,
+            );
+        }
+
+        return Ok(expanded);
+    }
+
+    // Handle Multiband channel count mismatch (e.g., 5-channel source → 4-channel RGBA)
+    let needs_channel_adjust = matches!(color_type, tiff::ColorType::Multiband { .. })
+        && (src_channels as usize) != target_channels;
+
     let bytes = match (result, target_ct) {
         // Direct 8-bit passthrough
-        (DR::U8(v), ChannelType::U8) => v,
+        (DR::U8(v), ChannelType::U8) => {
+            if needs_channel_adjust {
+                adjust_channels_u8(v, src_channels as usize, target_channels, width, height)
+            } else {
+                v
+            }
+        }
 
         // Direct 16-bit passthrough
-        (DR::U16(v), ChannelType::U16) => vec_to_bytes(v),
+        (DR::U16(v), ChannelType::U16) => {
+            if needs_channel_adjust {
+                vec_to_bytes(adjust_channels_u16(
+                    v,
+                    src_channels as usize,
+                    target_channels,
+                    width,
+                    height,
+                ))
+            } else {
+                vec_to_bytes(v)
+            }
+        }
 
         // Direct f32 passthrough
         (DR::F32(v), ChannelType::F32) => vec_to_bytes(v),
@@ -410,6 +613,95 @@ fn result_to_bytes(
     Ok(bytes)
 }
 
+/// Adjust channel count for U8 Multiband data.
+fn adjust_channels_u8(
+    data: Vec<u8>,
+    src_ch: usize,
+    dst_ch: usize,
+    width: u32,
+    height: u32,
+) -> Vec<u8> {
+    if src_ch > dst_ch {
+        truncate_channels(&data, src_ch, dst_ch, width, height)
+    } else {
+        expand_channels(&data, src_ch, dst_ch, width, height)
+    }
+}
+
+/// Adjust channel count for U16 Multiband data.
+fn adjust_channels_u16(
+    data: Vec<u16>,
+    src_ch: usize,
+    dst_ch: usize,
+    _width: u32,
+    _height: u32,
+) -> Vec<u16> {
+    let pixel_count = data.len() / src_ch;
+    if src_ch > dst_ch {
+        let mut out = Vec::with_capacity(pixel_count * dst_ch);
+        for i in 0..pixel_count {
+            let base = i * src_ch;
+            for c in 0..dst_ch {
+                out.push(data[base + c]);
+            }
+        }
+        out
+    } else {
+        let mut out = Vec::with_capacity(pixel_count * dst_ch);
+        for i in 0..pixel_count {
+            let base = i * src_ch;
+            for c in 0..src_ch {
+                out.push(data[base + c]);
+            }
+            // Pad with max value (opaque alpha)
+            for _ in src_ch..dst_ch {
+                out.push(u16::MAX);
+            }
+        }
+        out
+    }
+}
+
+/// Truncate extra channels from interleaved data.
+fn truncate_channels(
+    data: &[u8],
+    src_ch: usize,
+    dst_ch: usize,
+    _width: u32,
+    _height: u32,
+) -> Vec<u8> {
+    let pixel_count = data.len() / src_ch;
+    let mut out = Vec::with_capacity(pixel_count * dst_ch);
+    for i in 0..pixel_count {
+        let base = i * src_ch;
+        for c in 0..dst_ch {
+            out.push(data[base + c]);
+        }
+    }
+    out
+}
+
+/// Expand channels by padding (e.g., 2ch gray+alpha → stays as-is if target matches,
+/// or pads with 255 for extra channels).
+fn expand_channels(
+    data: &[u8],
+    src_ch: usize,
+    dst_ch: usize,
+    _width: u32,
+    _height: u32,
+) -> Vec<u8> {
+    let pixel_count = data.len() / src_ch;
+    let mut out = Vec::with_capacity(pixel_count * dst_ch);
+    for i in 0..pixel_count {
+        let base = i * src_ch;
+        for c in 0..src_ch {
+            out.push(data[base + c]);
+        }
+        out.extend(core::iter::repeat_n(255u8, dst_ch - src_ch));
+    }
+    out
+}
+
 /// Convert CMYK/CMYKA to RGBA.
 #[track_caller]
 fn convert_cmyk(
@@ -443,6 +735,44 @@ fn convert_cmyk(
                 let g = ((1.0 - m) * (1.0 - k) * 255.0 + 0.5) as u8;
                 let b = ((1.0 - y) * (1.0 - k) * 255.0 + 0.5) as u8;
                 let a = if has_alpha { data[base + 4] } else { 255 };
+
+                rgba.push(r);
+                rgba.push(g);
+                rgba.push(b);
+                rgba.push(a);
+            }
+
+            let desc = PixelDescriptor::RGBA8;
+            let buf = PixelBuffer::from_vec(rgba, width, height, desc)
+                .map_err(|e| at!(TiffError::from(e)))?;
+            Ok((buf, desc))
+        }
+        DR::I8(data) => {
+            // Signed CMYK: offset to unsigned first, then convert
+            let src_channels: usize = if has_alpha { 5 } else { 4 };
+            let pixel_count = data.len() / src_channels;
+            let mut rgba = Vec::new();
+            rgba.try_reserve(pixel_count * 4).map_err(|_| {
+                at!(TiffError::LimitExceeded(
+                    "CMYK conversion allocation failed".into()
+                ))
+            })?;
+
+            for i in 0..pixel_count {
+                let base = i * src_channels;
+                let c = data[base].wrapping_add(i8::MIN) as u8 as f32 / 255.0;
+                let m = data[base + 1].wrapping_add(i8::MIN) as u8 as f32 / 255.0;
+                let y = data[base + 2].wrapping_add(i8::MIN) as u8 as f32 / 255.0;
+                let k = data[base + 3].wrapping_add(i8::MIN) as u8 as f32 / 255.0;
+
+                let r = ((1.0 - c) * (1.0 - k) * 255.0 + 0.5) as u8;
+                let g = ((1.0 - m) * (1.0 - k) * 255.0 + 0.5) as u8;
+                let b = ((1.0 - y) * (1.0 - k) * 255.0 + 0.5) as u8;
+                let a = if has_alpha {
+                    data[base + 4].wrapping_add(i8::MIN) as u8
+                } else {
+                    255
+                };
 
                 rgba.push(r);
                 rgba.push(g);
@@ -590,5 +920,42 @@ mod tests {
     fn descriptor_for_palette() {
         let d = descriptor_for(tiff::ColorType::Palette(8), false);
         assert_eq!(d, PixelDescriptor::RGB8);
+    }
+
+    #[test]
+    fn descriptor_for_multiband_2ch() {
+        let d = descriptor_for(
+            tiff::ColorType::Multiband {
+                bit_depth: 8,
+                num_samples: 2,
+            },
+            false,
+        );
+        assert_eq!(d.layout(), ChannelLayout::GrayAlpha);
+        assert_eq!(d.channel_type(), ChannelType::U8);
+    }
+
+    #[test]
+    fn unpack_1bit() {
+        // 8 pixels wide, 1 row, 1-bit: packed = [0b10110100] = 1,0,1,1,0,1,0,0
+        let packed = vec![0b1011_0100];
+        let result = unpack_subbyte(&packed, 8, 1, 1, 1);
+        assert_eq!(result, vec![255, 0, 255, 255, 0, 255, 0, 0]);
+    }
+
+    #[test]
+    fn unpack_2bit() {
+        // 4 pixels wide, 1 row, 2-bit: packed = [0b11_10_01_00]
+        let packed = vec![0b11_10_01_00];
+        let result = unpack_subbyte(&packed, 4, 1, 2, 1);
+        assert_eq!(result, vec![255, 170, 85, 0]);
+    }
+
+    #[test]
+    fn unpack_4bit() {
+        // 2 pixels wide, 1 row, 4-bit: packed = [0xF0]
+        let packed = vec![0xF0];
+        let result = unpack_subbyte(&packed, 2, 1, 4, 1);
+        assert_eq!(result, vec![255, 0]);
     }
 }
