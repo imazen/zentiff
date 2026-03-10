@@ -23,11 +23,13 @@ codec-corpus = "1"
 
 [features]
 default = ["std", "deflate", "lzw"]
+all-codecs = ["deflate", "fax", "jpeg", "lzw", "webp", "zstd"]
 std = ["tiff/default", "enough/std", "whereat/std"]
 deflate = ["tiff/deflate"]
 fax = ["tiff/fax"]
 jpeg = ["tiff/jpeg"]
 lzw = ["tiff/lzw"]
+webp = ["tiff/webp"]
 zstd = ["tiff/zstd"]
 # zencodec = ["dep:zencodec-types"]
 
