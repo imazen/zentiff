@@ -1,7 +1,10 @@
 //! TIFF decoding and probing.
 
+use alloc::string::String;
 use alloc::vec::Vec;
 use enough::Stop;
+use tiff::decoder::ifd::Value;
+use tiff::tags::Tag;
 use whereat::{ResultAtExt, at};
 use zenpixels::{ChannelType, PixelBuffer, PixelDescriptor};
 
@@ -25,6 +28,46 @@ pub struct TiffInfo {
     pub is_float: bool,
     /// Whether the source uses signed integer samples.
     pub is_signed: bool,
+
+    // --- Embedded metadata ---
+    /// ICC color profile (Tag 34675).
+    pub icc_profile: Option<Vec<u8>>,
+    /// Raw EXIF sub-IFD bytes, re-serialized from the EXIF IFD (Tag 34665 pointer).
+    pub exif: Option<Vec<u8>>,
+    /// XMP metadata (Tag 700).
+    pub xmp: Option<Vec<u8>>,
+    /// IPTC-NAA metadata (Tag 33723).
+    pub iptc: Option<Vec<u8>>,
+
+    // --- Physical dimensions ---
+    /// Resolution unit (Tag 296): 1 = no unit, 2 = inch, 3 = centimeter.
+    pub resolution_unit: Option<u16>,
+    /// X resolution as a rational (numerator, denominator) (Tag 282).
+    pub x_resolution: Option<(u32, u32)>,
+    /// Y resolution as a rational (numerator, denominator) (Tag 283).
+    pub y_resolution: Option<(u32, u32)>,
+    /// DPI computed from resolution tags. Both values are in dots-per-inch
+    /// (centimeter resolution is converted). `None` if resolution unit is
+    /// absent or "no unit" (1).
+    pub dpi: Option<(f64, f64)>,
+
+    // --- Orientation ---
+    /// EXIF orientation (Tag 274): values 1-8. `None` if not present.
+    pub orientation: Option<u16>,
+
+    // --- Image properties ---
+    /// Compression method (Tag 259).
+    pub compression: Option<u16>,
+    /// Photometric interpretation (Tag 262).
+    pub photometric: Option<u16>,
+    /// Samples per pixel (Tag 277).
+    pub samples_per_pixel: Option<u16>,
+
+    // --- Multi-page ---
+    /// Number of IFDs (pages/frames) in the file.
+    pub page_count: Option<u32>,
+    /// Page name (Tag 285). `None` if not present.
+    pub page_name: Option<alloc::string::String>,
 }
 
 /// TIFF decode output.
@@ -111,6 +154,434 @@ impl Default for TiffDecodeConfig {
     }
 }
 
+/// Compute DPI from resolution values and unit.
+///
+/// Returns `None` if unit is absent, "no unit" (1), or denominators are zero.
+fn compute_dpi(
+    unit: Option<u16>,
+    x_res: Option<(u32, u32)>,
+    y_res: Option<(u32, u32)>,
+) -> Option<(f64, f64)> {
+    let unit = unit?;
+    // Unit 1 = no absolute unit, so DPI is not meaningful.
+    if !(2..=3).contains(&unit) {
+        return None;
+    }
+    let (xn, xd) = x_res?;
+    let (yn, yd) = y_res?;
+    if xd == 0 || yd == 0 {
+        return None;
+    }
+    let x = xn as f64 / xd as f64;
+    let y = yn as f64 / yd as f64;
+    if unit == 3 {
+        // Centimeters → inches (1 inch = 2.54 cm)
+        Some((x * 2.54, y * 2.54))
+    } else {
+        Some((x, y))
+    }
+}
+
+/// Read a RATIONAL tag as (numerator, denominator).
+fn read_rational<R: std::io::Read + std::io::Seek>(
+    decoder: &mut tiff::decoder::Decoder<R>,
+    tag: Tag,
+) -> Option<(u32, u32)> {
+    match decoder.find_tag(tag) {
+        Ok(Some(Value::Rational(n, d))) => Some((n, d)),
+        // Some encoders store resolution as u32_vec [num, denom]
+        Ok(Some(val)) => {
+            if let Ok(v) = val.into_u32_vec()
+                && v.len() == 2
+            {
+                return Some((v[0], v[1]));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Read an unsigned u16 tag value.
+fn read_u16_tag<R: std::io::Read + std::io::Seek>(
+    decoder: &mut tiff::decoder::Decoder<R>,
+    tag: Tag,
+) -> Option<u16> {
+    decoder.find_tag_unsigned::<u16>(tag).unwrap_or_default()
+}
+
+/// Read a byte-array tag (ICC profile, XMP, IPTC).
+fn read_bytes_tag<R: std::io::Read + std::io::Seek>(
+    decoder: &mut tiff::decoder::Decoder<R>,
+    tag: Tag,
+) -> Option<Vec<u8>> {
+    match decoder.get_tag_u8_vec(tag) {
+        Ok(v) if !v.is_empty() => Some(v),
+        _ => None,
+    }
+}
+
+/// Read an ASCII string tag.
+fn read_ascii_tag<R: std::io::Read + std::io::Seek>(
+    decoder: &mut tiff::decoder::Decoder<R>,
+    tag: Tag,
+) -> Option<String> {
+    match decoder.get_tag_ascii_string(tag) {
+        Ok(s) if !s.is_empty() => Some(s),
+        _ => None,
+    }
+}
+
+/// Count the number of IFDs (pages) by walking the chain.
+///
+/// Restores the decoder to IFD 0 before returning.
+fn count_pages<R: std::io::Read + std::io::Seek>(decoder: &mut tiff::decoder::Decoder<R>) -> u32 {
+    let mut count: u32 = 1;
+    while decoder.more_images() {
+        if decoder.next_image().is_err() {
+            break;
+        }
+        count = count.saturating_add(1);
+    }
+    // Seek back to first image so caller is not disrupted
+    let _ = decoder.seek_to_image(0);
+    count
+}
+
+/// Extract the EXIF sub-IFD as raw tag/value bytes.
+///
+/// TIFF stores EXIF as a pointer to a sub-IFD (Tag 34665). We read the
+/// sub-IFD directory and re-serialize its tag entries as raw bytes.
+/// This preserves the EXIF data in a form that downstream consumers
+/// (e.g., image-rs, kamadak-exif) can parse.
+fn read_exif_bytes<R: std::io::Read + std::io::Seek>(
+    decoder: &mut tiff::decoder::Decoder<R>,
+) -> Option<Vec<u8>> {
+    let exif_tag = Tag::ExifDirectory;
+    let ptr_val = match decoder.find_tag(exif_tag) {
+        Ok(Some(v)) => v,
+        _ => return None,
+    };
+    let ptr = match ptr_val.into_ifd_pointer() {
+        Ok(p) => p,
+        Err(_) => return None,
+    };
+    let dir = match decoder.read_directory(ptr) {
+        Ok(d) => d,
+        Err(_) => return None,
+    };
+    // Re-serialize the EXIF IFD into a minimal TIFF-structured byte blob.
+    // This creates a standalone TIFF header + single IFD that EXIF parsers
+    // can consume.
+    serialize_exif_ifd(decoder, &dir)
+}
+
+/// Serialize an EXIF IFD directory into a standalone TIFF byte blob.
+///
+/// Format: TIFF header (8 bytes) + IFD entry count (2 bytes) + entries
+/// (12 bytes each) + next IFD offset (4 bytes) + data.
+fn serialize_exif_ifd<R: std::io::Read + std::io::Seek>(
+    decoder: &mut tiff::decoder::Decoder<R>,
+    dir: &tiff::Directory,
+) -> Option<Vec<u8>> {
+    let byte_order = decoder.byte_order();
+    let is_le = matches!(byte_order, tiff::tags::ByteOrder::LittleEndian);
+
+    // Helper closures for writing endian-aware values
+    let write_u16 = |buf: &mut Vec<u8>, val: u16| {
+        if is_le {
+            buf.extend_from_slice(&val.to_le_bytes());
+        } else {
+            buf.extend_from_slice(&val.to_be_bytes());
+        }
+    };
+    let write_u32 = |buf: &mut Vec<u8>, val: u32| {
+        if is_le {
+            buf.extend_from_slice(&val.to_le_bytes());
+        } else {
+            buf.extend_from_slice(&val.to_be_bytes());
+        }
+    };
+
+    let mut buf = Vec::new();
+
+    // TIFF header
+    if is_le {
+        buf.extend_from_slice(b"II"); // Little-endian
+    } else {
+        buf.extend_from_slice(b"MM"); // Big-endian
+    }
+    write_u16(&mut buf, 42); // TIFF magic
+    write_u32(&mut buf, 8); // Offset to first IFD (immediately after header)
+
+    // Read tag entries from the directory using IfdDecoder
+    let ifd_dec = decoder.read_directory_tags(dir);
+    let entries: Vec<(Tag, Value)> = ifd_dec.tag_iter().filter_map(|r| r.ok()).collect();
+
+    let entry_count = entries.len() as u16;
+    write_u16(&mut buf, entry_count);
+
+    // We'll write 12 bytes per entry, then 4 bytes for next-IFD (0).
+    // Data that doesn't fit in 4 bytes goes after the IFD.
+    let ifd_end = 8 + 2 + (entry_count as u32) * 12 + 4;
+    let mut overflow_data: Vec<u8> = Vec::new();
+
+    for (tag, value) in &entries {
+        let tag_id = tag.to_u16();
+        write_u16(&mut buf, tag_id);
+
+        // Encode the value, determining type and bytes
+        match value {
+            Value::Byte(v) => {
+                write_u16(&mut buf, 1); // BYTE
+                write_u32(&mut buf, 1); // count
+                let mut val_bytes = [0u8; 4];
+                val_bytes[0] = *v;
+                buf.extend_from_slice(&val_bytes);
+            }
+            Value::Short(v) => {
+                write_u16(&mut buf, 3); // SHORT
+                write_u32(&mut buf, 1);
+                let mut val_bytes = [0u8; 4];
+                if is_le {
+                    val_bytes[..2].copy_from_slice(&v.to_le_bytes());
+                } else {
+                    val_bytes[..2].copy_from_slice(&v.to_be_bytes());
+                }
+                buf.extend_from_slice(&val_bytes);
+            }
+            Value::Unsigned(v) => {
+                write_u16(&mut buf, 4); // LONG
+                write_u32(&mut buf, 1);
+                write_u32(&mut buf, *v);
+            }
+            Value::Signed(v) => {
+                write_u16(&mut buf, 9); // SLONG
+                write_u32(&mut buf, 1);
+                if is_le {
+                    buf.extend_from_slice(&v.to_le_bytes());
+                } else {
+                    buf.extend_from_slice(&v.to_be_bytes());
+                }
+            }
+            Value::Rational(n, d) => {
+                let offset = ifd_end + overflow_data.len() as u32;
+                write_u16(&mut buf, 5); // RATIONAL
+                write_u32(&mut buf, 1);
+                write_u32(&mut buf, offset);
+                if is_le {
+                    overflow_data.extend_from_slice(&n.to_le_bytes());
+                    overflow_data.extend_from_slice(&d.to_le_bytes());
+                } else {
+                    overflow_data.extend_from_slice(&n.to_be_bytes());
+                    overflow_data.extend_from_slice(&d.to_be_bytes());
+                }
+            }
+            Value::SRational(n, d) => {
+                let offset = ifd_end + overflow_data.len() as u32;
+                write_u16(&mut buf, 10); // SRATIONAL
+                write_u32(&mut buf, 1);
+                write_u32(&mut buf, offset);
+                if is_le {
+                    overflow_data.extend_from_slice(&n.to_le_bytes());
+                    overflow_data.extend_from_slice(&d.to_le_bytes());
+                } else {
+                    overflow_data.extend_from_slice(&n.to_be_bytes());
+                    overflow_data.extend_from_slice(&d.to_be_bytes());
+                }
+            }
+            Value::Ascii(s) => {
+                let bytes = s.as_bytes();
+                // ASCII includes null terminator
+                let count = bytes.len() as u32 + 1;
+                write_u16(&mut buf, 2); // ASCII
+                write_u32(&mut buf, count);
+                if count <= 4 {
+                    let mut val_bytes = [0u8; 4];
+                    val_bytes[..bytes.len()].copy_from_slice(bytes);
+                    buf.extend_from_slice(&val_bytes);
+                } else {
+                    let offset = ifd_end + overflow_data.len() as u32;
+                    write_u32(&mut buf, offset);
+                    overflow_data.extend_from_slice(bytes);
+                    overflow_data.push(0); // null terminator
+                }
+            }
+            Value::List(items) => {
+                // Determine homogeneous type from first element
+                if let Some(first) = items.first() {
+                    let count = items.len() as u32;
+                    match first {
+                        Value::Byte(_) => {
+                            write_u16(&mut buf, 1); // BYTE
+                            write_u32(&mut buf, count);
+                            if count <= 4 {
+                                let mut val_bytes = [0u8; 4];
+                                for (i, item) in items.iter().enumerate().take(4) {
+                                    if let Value::Byte(b) = item {
+                                        val_bytes[i] = *b;
+                                    }
+                                }
+                                buf.extend_from_slice(&val_bytes);
+                            } else {
+                                let offset = ifd_end + overflow_data.len() as u32;
+                                write_u32(&mut buf, offset);
+                                for item in items {
+                                    if let Value::Byte(b) = item {
+                                        overflow_data.push(*b);
+                                    }
+                                }
+                            }
+                        }
+                        Value::Short(_) => {
+                            write_u16(&mut buf, 3); // SHORT
+                            write_u32(&mut buf, count);
+                            if count <= 2 {
+                                let mut val_bytes = [0u8; 4];
+                                for (i, item) in items.iter().enumerate().take(2) {
+                                    if let Value::Short(v) = item {
+                                        let b = if is_le {
+                                            v.to_le_bytes()
+                                        } else {
+                                            v.to_be_bytes()
+                                        };
+                                        val_bytes[i * 2..i * 2 + 2].copy_from_slice(&b);
+                                    }
+                                }
+                                buf.extend_from_slice(&val_bytes);
+                            } else {
+                                let offset = ifd_end + overflow_data.len() as u32;
+                                write_u32(&mut buf, offset);
+                                for item in items {
+                                    if let Value::Short(v) = item {
+                                        if is_le {
+                                            overflow_data.extend_from_slice(&v.to_le_bytes());
+                                        } else {
+                                            overflow_data.extend_from_slice(&v.to_be_bytes());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Value::Rational(_, _) => {
+                            write_u16(&mut buf, 5); // RATIONAL
+                            write_u32(&mut buf, count);
+                            let offset = ifd_end + overflow_data.len() as u32;
+                            write_u32(&mut buf, offset);
+                            for item in items {
+                                if let Value::Rational(n, d) = item {
+                                    if is_le {
+                                        overflow_data.extend_from_slice(&n.to_le_bytes());
+                                        overflow_data.extend_from_slice(&d.to_le_bytes());
+                                    } else {
+                                        overflow_data.extend_from_slice(&n.to_be_bytes());
+                                        overflow_data.extend_from_slice(&d.to_be_bytes());
+                                    }
+                                }
+                            }
+                        }
+                        Value::Unsigned(_) => {
+                            write_u16(&mut buf, 4); // LONG
+                            write_u32(&mut buf, count);
+                            if count == 1 {
+                                if let Value::Unsigned(v) = items[0] {
+                                    write_u32(&mut buf, v);
+                                } else {
+                                    write_u32(&mut buf, 0);
+                                }
+                            } else {
+                                let offset = ifd_end + overflow_data.len() as u32;
+                                write_u32(&mut buf, offset);
+                                for item in items {
+                                    if let Value::Unsigned(v) = item {
+                                        if is_le {
+                                            overflow_data.extend_from_slice(&v.to_le_bytes());
+                                        } else {
+                                            overflow_data.extend_from_slice(&v.to_be_bytes());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // Fallback: skip unknown list element types
+                        _ => {
+                            write_u16(&mut buf, 7); // UNDEFINED
+                            write_u32(&mut buf, 0);
+                            write_u32(&mut buf, 0);
+                        }
+                    }
+                } else {
+                    // Empty list
+                    write_u16(&mut buf, 7); // UNDEFINED
+                    write_u32(&mut buf, 0);
+                    write_u32(&mut buf, 0);
+                }
+            }
+            // Skip types we don't need to serialize
+            _ => {
+                write_u16(&mut buf, 7); // UNDEFINED
+                write_u32(&mut buf, 0);
+                write_u32(&mut buf, 0);
+            }
+        }
+    }
+
+    // Next IFD offset = 0 (no more IFDs)
+    write_u32(&mut buf, 0);
+
+    // Append overflow data
+    buf.extend_from_slice(&overflow_data);
+
+    if buf.len() > 8 + 2 + 4 {
+        // Only return if we have actual content beyond the header
+        Some(buf)
+    } else {
+        None
+    }
+}
+
+/// Extract all metadata fields from a TIFF decoder into a `TiffInfo`.
+///
+/// Populates ICC, EXIF, XMP, IPTC, resolution, orientation, compression,
+/// photometric, samples-per-pixel, page count, and page name.
+fn extract_metadata<R: std::io::Read + std::io::Seek>(
+    decoder: &mut tiff::decoder::Decoder<R>,
+    info: &mut TiffInfo,
+) {
+    // Tag constants not defined in the tiff crate
+    const TAG_XMP: Tag = Tag::Unknown(700);
+    const TAG_IPTC: Tag = Tag::Unknown(33723);
+    const TAG_PAGE_NAME: Tag = Tag::Unknown(285);
+
+    // Byte-array metadata
+    info.icc_profile = read_bytes_tag(decoder, Tag::IccProfile);
+    info.xmp = read_bytes_tag(decoder, TAG_XMP);
+    info.iptc = read_bytes_tag(decoder, TAG_IPTC);
+
+    // EXIF sub-IFD
+    info.exif = read_exif_bytes(decoder);
+
+    // Resolution
+    info.resolution_unit = read_u16_tag(decoder, Tag::ResolutionUnit);
+    info.x_resolution = read_rational(decoder, Tag::XResolution);
+    info.y_resolution = read_rational(decoder, Tag::YResolution);
+    info.dpi = compute_dpi(info.resolution_unit, info.x_resolution, info.y_resolution);
+
+    // Orientation
+    info.orientation = read_u16_tag(decoder, Tag::Orientation);
+
+    // Image properties
+    info.compression = read_u16_tag(decoder, Tag::Compression);
+    info.photometric = read_u16_tag(decoder, Tag::PhotometricInterpretation);
+    info.samples_per_pixel = read_u16_tag(decoder, Tag::SamplesPerPixel);
+
+    // Page name
+    info.page_name = read_ascii_tag(decoder, TAG_PAGE_NAME);
+
+    // Page count (walks the IFD chain — do this last)
+    info.page_count = Some(count_pages(decoder));
+}
+
 /// Probe TIFF metadata without decoding pixels.
 #[track_caller]
 #[allow(deprecated)] // Decoder::new deprecated in favor of open+next_image
@@ -120,7 +591,7 @@ pub fn probe(data: &[u8]) -> Result<TiffInfo> {
     let (width, height) = decoder.dimensions().map_err(|e| at!(TiffError::from(e)))?;
     let color_type = decoder.colortype().map_err(|e| at!(TiffError::from(e)))?;
 
-    Ok(TiffInfo {
+    let mut info = TiffInfo {
         width,
         height,
         channels: color_type.num_samples(),
@@ -129,7 +600,25 @@ pub fn probe(data: &[u8]) -> Result<TiffInfo> {
         // Cannot determine float/signed without reading; probe defaults to false.
         is_float: false,
         is_signed: false,
-    })
+        icc_profile: None,
+        exif: None,
+        xmp: None,
+        iptc: None,
+        resolution_unit: None,
+        x_resolution: None,
+        y_resolution: None,
+        dpi: None,
+        orientation: None,
+        compression: None,
+        photometric: None,
+        samples_per_pixel: None,
+        page_count: None,
+        page_name: None,
+    };
+
+    extract_metadata(&mut decoder, &mut info);
+
+    Ok(info)
 }
 
 /// Decode the first frame of a TIFF file to pixels.
@@ -171,6 +660,36 @@ pub fn decode(
 
     cancel.check().map_err(|e| at!(TiffError::from(e)))?;
 
+    // Extract metadata before decoding pixels, because image reading
+    // repositions the stream and may interfere with tag reads.
+    let mut info = TiffInfo {
+        width,
+        height,
+        channels: color_type.num_samples(),
+        bit_depth: color_type.bit_depth(),
+        color_type,
+        is_float: false,
+        is_signed: false,
+        icc_profile: None,
+        exif: None,
+        xmp: None,
+        iptc: None,
+        resolution_unit: None,
+        x_resolution: None,
+        y_resolution: None,
+        dpi: None,
+        orientation: None,
+        compression: None,
+        photometric: None,
+        samples_per_pixel: None,
+        page_count: None,
+        page_name: None,
+    };
+
+    extract_metadata(&mut decoder, &mut info);
+
+    cancel.check().map_err(|e| at!(TiffError::from(e)))?;
+
     // Use read_image_to_buffer instead of read_image to support planar images.
     // read_image() only reads the first plane for planar TIFFs (known bug).
     let layout = decoder
@@ -186,6 +705,8 @@ pub fn decode(
     cancel.check().map_err(|e| at!(TiffError::from(e)))?;
 
     let (is_float, is_signed) = result_format_flags(&result);
+    info.is_float = is_float;
+    info.is_signed = is_signed;
     let color_map = decoder.color_map().map(|m| m.to_vec());
 
     // For planar images, interleave planes into contiguous pixel data.
@@ -195,16 +716,6 @@ pub fn decode(
 
     let (pixels, _descriptor) =
         convert_to_pixel_buffer(width, height, color_type, result, color_map.as_deref()).at()?;
-
-    let info = TiffInfo {
-        width,
-        height,
-        channels: color_type.num_samples(),
-        bit_depth: color_type.bit_depth(),
-        color_type,
-        is_float,
-        is_signed,
-    };
 
     Ok(TiffDecodeOutput { pixels, info })
 }
