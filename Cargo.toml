@@ -16,6 +16,7 @@ whereat = { version = "0.1.3", default-features = false }
 enough = { version = "0.4", default-features = false }
 zenpixels = { version = "0.1", path = "../zenpixels/zenpixels", default-features = false }
 # zencodec = { version = "0.1", path = "../zencodec", optional = true }
+zennode = { version = "0.1", path = "../zennode/zennode", default-features = false, features = ["derive"], optional = true }
 bytemuck = { version = "1.25", default-features = false, features = ["extern_crate_alloc"] }
 
 [dev-dependencies]
@@ -32,6 +33,8 @@ lzw = ["tiff/lzw"]
 webp = ["tiff/webp"]
 zstd = ["tiff/zstd"]
 # zencodec = ["dep:zencodec"]
+# zennode node definitions (EncodeTiff schema with RIAPI keys)
+zennode = ["dep:zennode"]
 
 [profile.test]
 opt-level = 2

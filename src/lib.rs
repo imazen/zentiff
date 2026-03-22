@@ -49,6 +49,9 @@ mod decode;
 mod encode;
 mod error;
 
+#[cfg(feature = "zennode")]
+pub mod zenode_defs;
+
 pub use decode::{TiffDecodeConfig, TiffDecodeOutput, TiffInfo, decode, probe};
 pub use encode::{Compression, Predictor, TiffEncodeConfig, encode, encode_into};
 pub use error::TiffError;
