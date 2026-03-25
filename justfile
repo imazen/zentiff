@@ -1,32 +1,32 @@
 # zentiff development tasks
 
-# Run tests (default features)
+default:
+    @just --list
+
+# Run tests (default features, includes zencodec)
 test:
     cargo test
-
-# Run tests with all codecs
-test-all:
     cargo test --features all-codecs
 
 # Check all feature permutations
 feature-check:
     cargo check
-    cargo check --features all-codecs
+    cargo check --all-features
     cargo check --no-default-features --features std
-    cargo check --no-default-features --features "std,fax"
-    cargo check --no-default-features --features "std,jpeg"
-    cargo check --no-default-features --features "std,webp"
-    cargo check --no-default-features --features "std,zstd"
-    cargo check --no-default-features --features "std,deflate"
-    cargo check --no-default-features --features "std,lzw"
+    cargo check --no-default-features --features "std,zencodec"
 
 # Clippy
 clippy:
-    cargo clippy --all-targets --features all-codecs -- -D warnings
+    cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --all-targets --no-default-features --features std -- -D warnings
 
 # Format
 fmt:
     cargo fmt
 
+# Format check
+fmt-check:
+    cargo fmt --check
+
 # Local CI sanity check
-ci: fmt clippy feature-check test-all
+ci: fmt-check clippy feature-check test

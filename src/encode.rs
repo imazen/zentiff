@@ -170,30 +170,36 @@ pub fn encode_into(
 }
 
 /// Cast `&[u8]` to `&[u16]`, copying to an aligned buffer if needed.
-fn as_u16_slice(data: &[u8]) -> std::borrow::Cow<'_, [u16]> {
+#[track_caller]
+fn as_u16_slice(data: &[u8]) -> Result<std::borrow::Cow<'_, [u16]>> {
     use std::borrow::Cow;
     match bytemuck::try_cast_slice(data) {
-        Ok(s) => Cow::Borrowed(s),
-        Err(bytemuck::PodCastError::TargetAlignmentGreaterAndInputNotAligned) => Cow::Owned(
+        Ok(s) => Ok(Cow::Borrowed(s)),
+        Err(bytemuck::PodCastError::TargetAlignmentGreaterAndInputNotAligned) => Ok(Cow::Owned(
             data.chunks_exact(2)
                 .map(|c| u16::from_ne_bytes([c[0], c[1]]))
                 .collect(),
-        ),
-        Err(e) => panic!("cannot cast &[u8] to &[u16]: {e:?}"),
+        )),
+        Err(e) => Err(at!(TiffError::InvalidInput(alloc::format!(
+            "cannot cast pixel data to &[u16]: {e:?}"
+        )))),
     }
 }
 
 /// Cast `&[u8]` to `&[f32]`, copying to an aligned buffer if needed.
-fn as_f32_slice(data: &[u8]) -> std::borrow::Cow<'_, [f32]> {
+#[track_caller]
+fn as_f32_slice(data: &[u8]) -> Result<std::borrow::Cow<'_, [f32]>> {
     use std::borrow::Cow;
     match bytemuck::try_cast_slice(data) {
-        Ok(s) => Cow::Borrowed(s),
-        Err(bytemuck::PodCastError::TargetAlignmentGreaterAndInputNotAligned) => Cow::Owned(
+        Ok(s) => Ok(Cow::Borrowed(s)),
+        Err(bytemuck::PodCastError::TargetAlignmentGreaterAndInputNotAligned) => Ok(Cow::Owned(
             data.chunks_exact(4)
                 .map(|c| f32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
                 .collect(),
-        ),
-        Err(e) => panic!("cannot cast &[u8] to &[f32]: {e:?}"),
+        )),
+        Err(e) => Err(at!(TiffError::InvalidInput(alloc::format!(
+            "cannot cast pixel data to &[f32]: {e:?}"
+        )))),
     }
 }
 
@@ -218,12 +224,12 @@ fn write_image<W: std::io::Write + std::io::Seek, K: tiff::encoder::TiffKind>(
                 .map_err(|e| at!(TiffError::from(e)))?;
         }
         (ChannelLayout::Gray, ChannelType::U16) => {
-            let samples = as_u16_slice(data);
+            let samples = as_u16_slice(data)?;
             enc.write_image::<colortype::Gray16>(width, height, &samples)
                 .map_err(|e| at!(TiffError::from(e)))?;
         }
         (ChannelLayout::Gray, ChannelType::F32) => {
-            let samples = as_f32_slice(data);
+            let samples = as_f32_slice(data)?;
             enc.write_image::<colortype::Gray32Float>(width, height, &samples)
                 .map_err(|e| at!(TiffError::from(e)))?;
         }
@@ -236,13 +242,13 @@ fn write_image<W: std::io::Write + std::io::Seek, K: tiff::encoder::TiffKind>(
                 .map_err(|e| at!(TiffError::from(e)))?;
         }
         (ChannelLayout::GrayAlpha, ChannelType::U16) => {
-            let samples = as_u16_slice(data);
+            let samples = as_u16_slice(data)?;
             let rgba = expand_graya_to_rgba_u16(&samples);
             enc.write_image::<colortype::RGBA16>(width, height, &rgba)
                 .map_err(|e| at!(TiffError::from(e)))?;
         }
         (ChannelLayout::GrayAlpha, ChannelType::F32) => {
-            let samples = as_f32_slice(data);
+            let samples = as_f32_slice(data)?;
             let rgba = expand_graya_to_rgba_f32(&samples);
             enc.write_image::<colortype::RGBA32Float>(width, height, &rgba)
                 .map_err(|e| at!(TiffError::from(e)))?;
@@ -254,12 +260,12 @@ fn write_image<W: std::io::Write + std::io::Seek, K: tiff::encoder::TiffKind>(
                 .map_err(|e| at!(TiffError::from(e)))?;
         }
         (ChannelLayout::Rgb, ChannelType::U16) => {
-            let samples = as_u16_slice(data);
+            let samples = as_u16_slice(data)?;
             enc.write_image::<colortype::RGB16>(width, height, &samples)
                 .map_err(|e| at!(TiffError::from(e)))?;
         }
         (ChannelLayout::Rgb, ChannelType::F32) => {
-            let samples = as_f32_slice(data);
+            let samples = as_f32_slice(data)?;
             enc.write_image::<colortype::RGB32Float>(width, height, &samples)
                 .map_err(|e| at!(TiffError::from(e)))?;
         }
@@ -270,12 +276,12 @@ fn write_image<W: std::io::Write + std::io::Seek, K: tiff::encoder::TiffKind>(
                 .map_err(|e| at!(TiffError::from(e)))?;
         }
         (ChannelLayout::Rgba, ChannelType::U16) => {
-            let samples = as_u16_slice(data);
+            let samples = as_u16_slice(data)?;
             enc.write_image::<colortype::RGBA16>(width, height, &samples)
                 .map_err(|e| at!(TiffError::from(e)))?;
         }
         (ChannelLayout::Rgba, ChannelType::F32) => {
-            let samples = as_f32_slice(data);
+            let samples = as_f32_slice(data)?;
             enc.write_image::<colortype::RGBA32Float>(width, height, &samples)
                 .map_err(|e| at!(TiffError::from(e)))?;
         }

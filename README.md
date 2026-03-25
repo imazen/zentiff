@@ -1,0 +1,93 @@
+# zentiff
+
+[![CI](https://img.shields.io/github/actions/workflow/status/imazen/zentiff/ci.yml?branch=main&style=for-the-badge)](https://github.com/imazen/zentiff/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/zentiff?style=for-the-badge)](https://crates.io/crates/zentiff)
+[![docs.rs](https://img.shields.io/docsrs/zentiff?style=for-the-badge)](https://docs.rs/zentiff)
+[![Codecov](https://img.shields.io/codecov/c/github/imazen/zentiff?style=for-the-badge)](https://codecov.io/gh/imazen/zentiff)
+[![License](https://img.shields.io/crates/l/zentiff?style=for-the-badge)](LICENSE-MIT)
+[![MSRV](https://img.shields.io/badge/MSRV-1.93-blue?style=for-the-badge)](https://doc.rust-lang.org/cargo/reference/manifest.html#the-rust-version-field)
+
+TIFF decoding and encoding with [zenpixels](https://crates.io/crates/zenpixels) integration. Wraps the [`tiff`](https://crates.io/crates/tiff) crate, providing a pixel-buffer-oriented API that plugs into the zen\* codec ecosystem.
+
+`#![forbid(unsafe_code)]`
+
+## Quick start
+
+```rust,no_run
+use zentiff::{decode, probe, encode, TiffDecodeConfig, TiffEncodeConfig};
+use enough::Unstoppable;
+
+// Decode
+let data: &[u8] = &[]; // your TIFF bytes
+let output = decode(data, &TiffDecodeConfig::default(), &Unstoppable)?;
+println!("{}x{}", output.info.width, output.info.height);
+
+// Encode
+let encoded = encode(&output.pixels.as_slice(), &TiffEncodeConfig::default(), &Unstoppable)?;
+# Ok::<(), whereat::At<zentiff::TiffError>>(())
+```
+
+## Decode support
+
+All color types and sample depths handled by the `tiff` crate:
+
+| Source format | Output |
+|---------------|--------|
+| Gray u8/u16 | Gray8 / Gray16 |
+| Gray float | GrayF32 |
+| GrayAlpha u8/u16/float | GrayAlpha8/16/F32 |
+| RGB / YCbCr / Lab u8/u16/float | RGB8/16/F32 |
+| RGBA u8/u16/float | RGBA8/16/F32 |
+| Palette | RGB8 (expanded via color map) |
+| CMYK / CMYKA | RGBA8/16 (converted) |
+
+Higher-depth integers (u32/u64/i8-i64) are widened to the next supported depth. Sub-byte samples (1/2/4/6-bit) are unpacked and scaled to 0-255.
+
+## Encode support
+
+| Format | Depths |
+|--------|--------|
+| Gray | u8, u16, f32 |
+| GrayAlpha | u8, u16, f32 (expanded to RGBA) |
+| RGB | u8, u16, f32 |
+| RGBA | u8, u16, f32 |
+
+Compression options: LZW (default), Deflate, PackBits, or uncompressed. Horizontal prediction for improved compression ratios. Standard and BigTIFF formats.
+
+## Metadata
+
+Extracts ICC profiles, EXIF (re-serialized from sub-IFD), XMP, IPTC, resolution (with cm→inch conversion), orientation, compression method, photometric interpretation, page count, and page name.
+
+## zencodec integration
+
+With the `zencodec` feature (enabled by default), zentiff implements both [`zencodec::decode::DecoderConfig`](https://docs.rs/zencodec) and [`zencodec::encode::EncoderConfig`](https://docs.rs/zencodec) for codec-agnostic image pipelines.
+
+Resource limits, cooperative cancellation, and decode policy (metadata suppression) are all supported through the zencodec trait flow.
+
+## Features
+
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `std` | Yes | Standard library support (required for I/O) |
+| `deflate` | Yes | DEFLATE/zlib compression |
+| `lzw` | Yes | LZW compression |
+| `zencodec` | Yes | zencodec encode/decode trait integration |
+| `fax` | No | CCITT fax compression (Group 3/4) |
+| `jpeg` | No | JPEG-in-TIFF compression |
+| `webp` | No | WebP-in-TIFF compression |
+| `zstd` | No | Zstandard compression |
+| `all-codecs` | No | Enables all compression codecs |
+
+## Dependencies
+
+All runtime dependencies are permissive (MIT, Apache-2.0, Zlib, BSD-2-Clause). No copyleft in the dependency tree.
+
+**Note:** Currently depends on a git revision of the `tiff` crate (via `[patch.crates-io]`) for the `color_map()` API needed for palette TIFF support. This blocks publishing to crates.io until `tiff` 0.12 releases.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT License](LICENSE-MIT) at your option.
+
+## AI-Generated Code Notice
+
+Developed with Claude (Anthropic). Not all code manually reviewed. Review critical paths before production use.

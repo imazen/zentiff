@@ -8,6 +8,8 @@ description = "TIFF decoding and encoding wrapper with zenpixels integration"
 categories = ["multimedia::images", "multimedia::encoding"]
 keywords = ["tiff", "image", "decoder", "encoder", "codec"]
 repository = "https://github.com/imazen/zentiff"
+documentation = "https://docs.rs/zentiff"
+readme = "README.md"
 exclude = ["CLAUDE.md", ".github/", "justfile"]
 
 [dependencies]
@@ -23,7 +25,7 @@ bytemuck = { version = "1.25.0", default-features = false, features = ["extern_c
 codec-corpus = "1.0.3"
 
 [features]
-default = ["std", "deflate", "lzw"]
+default = ["std", "deflate", "lzw", "zencodec"]
 all-codecs = ["deflate", "fax", "jpeg", "lzw", "webp", "zstd"]
 std = ["tiff/default", "enough/std", "whereat/std"]
 deflate = ["tiff/deflate"]
@@ -33,6 +35,9 @@ lzw = ["tiff/lzw"]
 webp = ["tiff/webp"]
 zstd = ["tiff/zstd"]
 zencodec = ["dep:zencodec"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [profile.test]
 opt-level = 2
