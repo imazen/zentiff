@@ -33,12 +33,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Patch path deps for CI
+      - name: Remove [patch.crates-io] for CI
         shell: bash
         run: |
-          sed \
-            -e 's|, path = "\.\./zenpixels/zenpixels"||g' \
-            -e '/\[patch.crates-io\]/,$d' \
+          sed -e '/\[patch.crates-io\]/,$d' \
             Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
           rm -f Cargo.lock
 
@@ -68,12 +66,10 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
 
-      - name: Patch path deps for CI
+      - name: Remove [patch.crates-io] for CI
         shell: bash
         run: |
-          sed \
-            -e 's|, path = "\.\./zenpixels/zenpixels"||g' \
-            -e '/\[patch.crates-io\]/,$d' \
+          sed -e '/\[patch.crates-io\]/,$d' \
             Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
           rm -f Cargo.lock
 
@@ -101,12 +97,10 @@ jobs:
       - uses: taiki-e/install-action@cargo-hack
       - uses: Swatinem/rust-cache@v2
 
-      - name: Patch path deps for CI
+      - name: Remove [patch.crates-io] for CI
         shell: bash
         run: |
-          sed \
-            -e 's|, path = "\.\./zenpixels/zenpixels"||g' \
-            -e '/\[patch.crates-io\]/,$d' \
+          sed -e '/\[patch.crates-io\]/,$d' \
             Cargo.toml > Cargo.toml.ci && mv Cargo.toml.ci Cargo.toml
           rm -f Cargo.lock
 

@@ -2,24 +2,25 @@
 name = "zentiff"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.93"
 license = "Apache-2.0 OR MIT"
 description = "TIFF decoding and encoding wrapper with zenpixels integration"
 categories = ["multimedia::images", "multimedia::encoding"]
 keywords = ["tiff", "image", "decoder", "encoder", "codec"]
 repository = "https://github.com/imazen/zentiff"
+exclude = ["CLAUDE.md", ".github/", "justfile"]
 
 [dependencies]
-tiff = { version = "0.11", default-features = false }
-thiserror = { version = "2.0", default-features = false }
+tiff = { version = "0.11.3", default-features = false }
+thiserror = { version = "2.0.18", default-features = false }
 whereat = { version = "0.1.4", default-features = false }
-enough = { version = "0.4", default-features = false }
+enough = { version = "0.4.2", default-features = false }
 zenpixels = { version = "0.2.0", default-features = false }
-# zencodec = { version = "0.1", path = "../zencodec", optional = true }
-bytemuck = { version = "1.25", default-features = false, features = ["extern_crate_alloc"] }
+# zencodec = { version = "0.1.1", optional = true }
+bytemuck = { version = "1.25.0", default-features = false, features = ["extern_crate_alloc"] }
 
 [dev-dependencies]
-codec-corpus = "1"
+codec-corpus = "1.0.3"
 
 [features]
 default = ["std", "deflate", "lzw"]
@@ -31,7 +32,7 @@ jpeg = ["tiff/jpeg"]
 lzw = ["tiff/lzw"]
 webp = ["tiff/webp"]
 zstd = ["tiff/zstd"]
-# zencodec = ["dep:zencodec"]
+# zencodec = ["dep:zencodec"]  # uncomment when zencodec integration is ready
 
 [profile.test]
 opt-level = 2

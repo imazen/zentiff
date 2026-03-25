@@ -76,7 +76,7 @@ impl From<zenpixels::BufferError> for TiffError {
 
 impl From<whereat::At<zenpixels::BufferError>> for TiffError {
     fn from(e: whereat::At<zenpixels::BufferError>) -> Self {
-        TiffError::Buffer(e.into_inner())
+        TiffError::Buffer(e.decompose().0)
     }
 }
 
