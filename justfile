@@ -11,13 +11,13 @@ test:
 # Check all feature permutations
 feature-check:
     cargo check
-    cargo check --all-features
+    cargo check --features "all-codecs,zencodec"
     cargo check --no-default-features --features std
     cargo check --no-default-features --features "std,zencodec"
 
 # Clippy
 clippy:
-    cargo clippy --all-targets --all-features -- -D warnings
+    cargo clippy --all-targets --features "all-codecs,zencodec" -- -D warnings
     cargo clippy --all-targets --no-default-features --features std -- -D warnings
 
 # Format

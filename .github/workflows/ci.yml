@@ -60,8 +60,8 @@ jobs:
       - name: Check (no default features, std only)
         run: cargo check --no-default-features --features std
 
-      - name: Check (all features)
-        run: cargo check --all-features
+      - name: Check (all usable features)
+        run: cargo check --features "all-codecs,zencodec"
 
       - name: Test (individual codecs)
         run: |
@@ -87,8 +87,8 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
 
-      - name: Clippy (all features)
-        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Clippy (all usable features)
+        run: cargo clippy --all-targets --features "all-codecs,zencodec" -- -D warnings
 
       - name: Clippy (no default features)
         run: cargo clippy --all-targets --no-default-features --features std -- -D warnings
@@ -135,7 +135,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Build docs
-        run: cargo doc --all-features --no-deps
+        run: cargo doc --features "all-codecs,zencodec" --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -153,7 +153,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Generate coverage
-        run: cargo llvm-cov --all-features --lcov --output-path lcov.info
+        run: cargo llvm-cov --features "all-codecs,zencodec" --lcov --output-path lcov.info
 
       - name: Upload to Codecov
         uses: codecov/codecov-action@v5

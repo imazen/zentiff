@@ -34,7 +34,9 @@ impl Compression {
                 "LZW compression requires the `lzw` feature".into(),
             ))),
             #[cfg(feature = "deflate")]
-            Self::Deflate => Ok(tiff::encoder::Compression::Deflate(6)),
+            Self::Deflate => Ok(tiff::encoder::Compression::Deflate(
+                tiff::encoder::DeflateLevel::Balanced,
+            )),
             #[cfg(not(feature = "deflate"))]
             Self::Deflate => Err(at!(TiffError::Unsupported(
                 "Deflate compression requires the `deflate` feature".into(),

@@ -707,7 +707,11 @@ pub fn decode(
     let (is_float, is_signed) = result_format_flags(&result);
     info.is_float = is_float;
     info.is_signed = is_signed;
+
+    #[cfg(feature = "_palette")]
     let color_map = decoder.color_map().map(|m| m.to_vec());
+    #[cfg(not(feature = "_palette"))]
+    let color_map: Option<Vec<u16>> = None;
 
     // For planar images, interleave planes into contiguous pixel data.
     if num_planes > 1 {
@@ -819,7 +823,8 @@ fn convert_to_pixel_buffer(
     height: u32,
     color_type: tiff::ColorType,
     result: tiff::decoder::DecodingResult,
-    color_map: Option<&[u16]>,
+    #[cfg(feature = "_palette")] color_map: Option<&[u16]>,
+    #[cfg(not(feature = "_palette"))] _color_map: Option<&[u16]>,
 ) -> Result<(PixelBuffer, PixelDescriptor)> {
     use tiff::decoder::DecodingResult as DR;
 
@@ -828,10 +833,19 @@ fn convert_to_pixel_buffer(
     let descriptor = descriptor_for(color_type, is_float);
 
     let raw_bytes: Vec<u8> = match color_type {
+        #[cfg(feature = "_palette")]
         tiff::ColorType::Palette(bits) => {
             let map = color_map
                 .ok_or_else(|| at!(TiffError::Decode("palette image missing color map".into())))?;
             return expand_palette(width, height, bits, result, map);
+        }
+        #[cfg(not(feature = "_palette"))]
+        tiff::ColorType::Palette(_) => {
+            return Err(at!(TiffError::Unsupported(
+                "palette TIFF decoding requires the `_palette` feature \
+                 (blocked on tiff crate 0.12+ release)"
+                    .into(),
+            )));
         }
         tiff::ColorType::CMYK(_) => {
             return convert_cmyk(width, height, color_type, result, false);
@@ -1384,6 +1398,7 @@ fn convert_cmyk(
 ///
 /// The color map has 3 × 2^bits entries as u16 values, laid out as
 /// [R0..Rn, G0..Gn, B0..Bn]. Each entry is scaled from u16 to u8 (>> 8).
+#[cfg(feature = "_palette")]
 #[track_caller]
 fn expand_palette(
     width: u32,
@@ -1458,6 +1473,7 @@ fn expand_palette(
 ///
 /// Unlike `unpack_subbyte`, this returns the raw index values without
 /// scaling to 0-255, since they will be used for palette lookup.
+#[cfg(feature = "_palette")]
 fn unpack_palette_indices(packed: &[u8], width: u32, height: u32, bits: u8) -> Vec<usize> {
     let samples_per_row = width as usize;
     let pixel_count = samples_per_row * height as usize;

@@ -38,7 +38,7 @@ All color types and sample depths handled by the `tiff` crate:
 | GrayAlpha u8/u16/float | GrayAlpha8/16/F32 |
 | RGB / YCbCr / Lab u8/u16/float | RGB8/16/F32 |
 | RGBA u8/u16/float | RGBA8/16/F32 |
-| Palette | RGB8 (expanded via color map) |
+| Palette | RGB8 (requires `_palette` feature, see below) |
 | CMYK / CMYKA | RGBA8/16 (converted) |
 
 Higher-depth integers (u32/u64/i8-i64) are widened to the next supported depth. Sub-byte samples (1/2/4/6-bit) are unpacked and scaled to 0-255.
@@ -77,12 +77,25 @@ Resource limits, cooperative cancellation, and decode policy (metadata suppressi
 | `webp` | No | WebP-in-TIFF compression |
 | `zstd` | No | Zstandard compression |
 | `all-codecs` | No | Enables all compression codecs |
+| `_palette` | No | Palette TIFF decode (blocked on `tiff` 0.12, see below) |
+
+## Known issues
+
+These are upstream limitations in the [`tiff`](https://crates.io/crates/tiff) crate (0.11.x) that affect zentiff:
+
+- **Palette TIFF decode disabled.** The `tiff` crate's `color_map()` API landed on git main but hasn't been released yet. Palette TIFFs return `Unsupported` until `tiff` 0.12 ships. The `_palette` feature flag exists for forward compatibility but doesn't work with `tiff` 0.11.x from crates.io.
+
+- **Chroma-subsampled YCbCr not supported.** The `tiff` crate rejects YCbCr data with chroma subsampling (anything other than 1:1) unless JPEG-compressed. There is no upsampling routine in the decoder. This means non-JPEG YCbCr TIFFs with 4:2:2 or 4:2:0 subsampling will fail to decode.
+
+- **Planar TIFF workaround.** `Decoder::read_image()` only reads the first plane for planar TIFFs. zentiff works around this by using `read_image_to_buffer()` and interleaving planes manually. This workaround is tested and functional.
+
+- **Deprecated decoder API.** zentiff uses `Decoder::new()` which is slated for deprecation in favor of `open()` + `next_image()`. Will need migration when the old API is removed.
+
+- **Multi-page decode is probe-only.** Page count is reported in `TiffInfo`, but the decode API only reads the first page. Multi-page decode would require exposing page selection (tracked for a future release).
 
 ## Dependencies
 
 All runtime dependencies are permissive (MIT, Apache-2.0, Zlib, BSD-2-Clause). No copyleft in the dependency tree.
-
-**Note:** Currently depends on a git revision of the `tiff` crate (via `[patch.crates-io]`) for the `color_map()` API needed for palette TIFF support. This blocks publishing to crates.io until `tiff` 0.12 releases.
 
 ## License
 

@@ -35,12 +35,13 @@ lzw = ["tiff/lzw"]
 webp = ["tiff/webp"]
 zstd = ["tiff/zstd"]
 zencodec = ["dep:zencodec"]
+# Palette TIFF support requires tiff crate's color_map() API, which is
+# not available in tiff 0.11.x (only on git main). Enable this feature
+# once tiff 0.12+ is released. Not included in all-codecs or default.
+_palette = []
 
 [package.metadata.docs.rs]
-all-features = true
+features = ["all-codecs", "zencodec"]
 
 [profile.test]
 opt-level = 2
-
-[patch.crates-io]
-tiff = { git = "https://github.com/image-rs/image-tiff.git" }
