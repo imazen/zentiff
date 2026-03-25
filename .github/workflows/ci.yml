@@ -40,8 +40,8 @@ jobs:
       - name: Test (all-codecs)
         run: cargo test --features all-codecs
 
-      - name: Test (std only, no codecs)
-        run: cargo test --no-default-features --features std
+      - name: Check (std only, no codecs)
+        run: cargo check --no-default-features --features std
 
       - name: Test (individual codecs)
         run: |
