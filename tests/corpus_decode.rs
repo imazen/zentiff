@@ -252,18 +252,21 @@ fn descriptor_for_diag(ct: tiff::ColorType, is_float: bool) -> PixelDescriptor {
 }
 
 #[test]
-#[ignore]
 fn corpus_decode_all() {
-    let tiff_dir =
-        std::path::PathBuf::from(std::env::var("TIFF_CORPUS_PATH").unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_default();
-            format!("{home}/work/codec-corpus/tiff-conformance")
-        }));
-    assert!(
-        tiff_dir.exists(),
-        "tiff corpus not found at {}",
-        tiff_dir.display()
-    );
+    let corpus = match codec_corpus::Corpus::new() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("codec-corpus unavailable ({e}), skipping");
+            return;
+        }
+    };
+    let tiff_dir = match corpus.get("tiff-conformance") {
+        Ok(d) => d.to_path_buf(),
+        Err(e) => {
+            eprintln!("tiff-conformance not available ({e}), skipping");
+            return;
+        }
+    };
 
     let mut results = Vec::new();
     try_all_files_in(&tiff_dir, &mut results);

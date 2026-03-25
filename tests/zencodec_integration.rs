@@ -216,23 +216,22 @@ fn roundtrip_gray8_via_traits() {
 }
 
 // ==========================================================================
-// Corpus integration (requires codec-corpus download, skipped in CI)
+// Corpus integration (codec-corpus caches after first download)
 // ==========================================================================
 
 #[test]
-#[ignore]
 fn corpus_decode_via_trait() {
     let corpus = match codec_corpus::Corpus::new() {
         Ok(c) => c,
-        Err(_) => {
-            eprintln!("codec-corpus unavailable, skipping");
+        Err(e) => {
+            eprintln!("codec-corpus unavailable ({e}), skipping");
             return;
         }
     };
     let valid_dir = match corpus.get("tiff-conformance/valid") {
         Ok(d) => d,
-        Err(_) => {
-            eprintln!("tiff-conformance/valid not available, skipping");
+        Err(e) => {
+            eprintln!("tiff-conformance/valid not available ({e}), skipping");
             return;
         }
     };
