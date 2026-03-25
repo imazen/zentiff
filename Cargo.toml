@@ -38,4 +38,4 @@ zencodec = ["dep:zencodec"]
 opt-level = 2
 
 [patch.crates-io]
-tiff = { git = "https://github.com/lilith/image-tiff.git", branch = "feat/all-fixes" }
+tiff = { git = "https://github.com/image-rs/image-tiff.git" }
