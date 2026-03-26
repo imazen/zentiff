@@ -338,7 +338,7 @@ impl TiffDecoderCodecConfig {
 
 impl zencodec::decode::DecoderConfig for TiffDecoderCodecConfig {
     type Error = TiffError;
-    type Job = TiffDecodeJob;
+    type Job<'a> = TiffDecodeJob;
 
     fn formats() -> &'static [ImageFormat] {
         &[ImageFormat::Tiff]
@@ -352,7 +352,7 @@ impl zencodec::decode::DecoderConfig for TiffDecoderCodecConfig {
         &TIFF_DECODE_CAPS
     }
 
-    fn job(self) -> TiffDecodeJob {
+    fn job<'a>(self) -> Self::Job<'a> {
         TiffDecodeJob {
             config: self,
             stop: None,
