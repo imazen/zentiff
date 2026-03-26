@@ -26,7 +26,7 @@ bytemuck = { version = "1.25.0", default-features = false, features = ["extern_c
 codec-corpus = "1.0.3"
 
 [features]
-default = ["std", "deflate", "lzw", "zencodec"]
+default = ["std", "deflate", "lzw"]
 all-codecs = ["deflate", "fax", "jpeg", "lzw", "webp", "zstd"]
 std = ["tiff/default", "enough/std", "whereat/std"]
 deflate = ["tiff/deflate"]
