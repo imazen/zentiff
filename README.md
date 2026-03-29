@@ -1,4 +1,4 @@
-# zentiff [![CI](https://img.shields.io/github/actions/workflow/status/imazen/zentiff/ci.yml?branch=main&style=flat-square)](https://github.com/imazen/zentiff/actions/workflows/ci.yml) [![Codecov](https://img.shields.io/codecov/c/github/imazen/zentiff?style=flat-square)](https://codecov.io/gh/imazen/zentiff) [![MSRV](https://img.shields.io/badge/MSRV-1.93-blue?style=flat-square)](https://doc.rust-lang.org/cargo/reference/manifest.html#the-rust-version-field) [![License](https://img.shields.io/crates/l/zentiff?style=flat-square)](https://github.com/imazen/zentiff#license)
+# zentiff [![CI](https://img.shields.io/github/actions/workflow/status/imazen/zentiff/ci.yml?branch=main&style=flat-square)](https://github.com/imazen/zentiff/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/zentiff?style=flat-square)](https://crates.io/crates/zentiff) [![lib.rs](https://img.shields.io/crates/v/zentiff?style=flat-square&label=lib.rs&color=blue)](https://lib.rs/crates/zentiff) [![docs.rs](https://img.shields.io/docsrs/zentiff?style=flat-square)](https://docs.rs/zentiff) [![License](https://img.shields.io/crates/l/zentiff?style=flat-square)](https://github.com/imazen/zentiff#license)
 
 TIFF decoding and encoding with [zenpixels](https://crates.io/crates/zenpixels) integration. Wraps the [`tiff`](https://crates.io/crates/tiff) crate, providing a pixel-buffer-oriented API that plugs into the zen\* codec ecosystem.
 
@@ -69,7 +69,6 @@ Resource limits, cooperative cancellation, and decode policy (metadata suppressi
 | `jpeg` | No | JPEG-in-TIFF compression |
 | `webp` | No | WebP-in-TIFF compression |
 | `zstd` | No | Zstandard compression |
-| `zennode` | No | zennode node definitions (EncodeTiff schema with RIAPI keys) |
 | `all-codecs` | No | Enables all compression codecs |
 | `_palette` | No | Palette TIFF decode (blocked on `tiff` 0.12, see below) |
 
@@ -115,7 +114,7 @@ All runtime dependencies are permissive (MIT, Apache-2.0, Zlib, BSD-2-Clause). N
 
 ## License
 
-Dual-licensed: [AGPL-3.0](LICENSE-AGPL3) or [commercial](LICENSE-COMMERCIAL).
+Dual-licensed: [AGPL-3.0](LICENSE) or [commercial](https://www.imazen.io/pricing).
 
 I've maintained and developed open-source image server software — and the 40+
 library ecosystem it depends on — full-time since 2011. Fifteen years of
@@ -136,7 +135,7 @@ Support sustainable and secure software; swap patch tuesday for patch leap-year.
   [Pricing & 60-day free trial →](https://www.imazen.io/pricing)
 - **AGPL v3** — Free and open. Share your source if you distribute.
 
-See [LICENSE-COMMERCIAL](LICENSE-COMMERCIAL) for details.
+For commercial licensing details, contact support@imazen.io or visit [imazen.io/pricing](https://www.imazen.io/pricing).
 
 ## AI-Generated Code Notice
 
