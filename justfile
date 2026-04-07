@@ -3,6 +3,12 @@
 default:
     @just --list
 
+# Run all fuzz targets for 60 seconds each
+fuzz SECONDS="60":
+    cargo +nightly fuzz run fuzz_decode -- -max_total_time={{SECONDS}} -dict=fuzz/tiff.dict
+    cargo +nightly fuzz run fuzz_probe -- -max_total_time={{SECONDS}} -dict=fuzz/tiff.dict
+    cargo +nightly fuzz run fuzz_decode_limits -- -max_total_time={{SECONDS}} -dict=fuzz/tiff.dict
+
 # Run tests (default features, includes zencodec)
 test:
     cargo test
