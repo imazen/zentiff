@@ -1,3 +1,7 @@
+> **This repository has been archived.** Development continues at [imazen/zenextras](https://github.com/imazen/zenextras) in the `zentiff/` directory.
+
+---
+
 # zentiff [![CI](https://img.shields.io/github/actions/workflow/status/imazen/zentiff/ci.yml?branch=main&style=flat-square)](https://github.com/imazen/zentiff/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/zentiff?style=flat-square)](https://crates.io/crates/zentiff) [![lib.rs](https://img.shields.io/crates/v/zentiff?style=flat-square&label=lib.rs&color=blue)](https://lib.rs/crates/zentiff) [![docs.rs](https://img.shields.io/docsrs/zentiff?style=flat-square)](https://docs.rs/zentiff) [![License](https://img.shields.io/crates/l/zentiff?style=flat-square)](https://github.com/imazen/zentiff#license)
 
 TIFF decoding and encoding with [zenpixels](https://crates.io/crates/zenpixels) integration. Wraps the [`tiff`](https://crates.io/crates/tiff) crate, providing a pixel-buffer-oriented API that plugs into the zen\* codec ecosystem.
